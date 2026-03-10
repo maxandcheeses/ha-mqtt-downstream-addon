@@ -112,26 +112,6 @@ HA helper domains are mapped to their MQTT equivalents:
 
 All attribute sub-topics are only published when the value is actually present on the entity — no empty payloads.
 
-## Vacuum commands
-
-The vacuum domain supports the full HA action set via the `set` command topic, plus fan speed and vendor-specific commands:
-
-| Payload | HA action |
-|---|---|
-| `start` | `vacuum.start` |
-| `pause` | `vacuum.pause` |
-| `stop` | `vacuum.stop` |
-| `return_to_base` | `vacuum.return_to_base` |
-| `locate` | `vacuum.locate` |
-| `clean_spot` | `vacuum.clean_spot` |
-| `clean_area` | `vacuum.clean_area` |
-
-For vendor-specific commands (e.g. Roborock zone/room cleaning), publish to `{mqtt_base}/vacuum/{slug}/send_command` with either a plain string or a JSON payload:
-
-```json
-{"command": "app_segment_clean", "params": [16, 20]}
-```
-
 ## Downstream HA setup
 
 To have a downstream HA instance auto-discover the entities, add this to its `configuration.yaml` matching your `discovery_prefix` setting:
@@ -155,7 +135,74 @@ Set `instance_name` on each instance (e.g. `Guest`, `IoT`, `Automation`) to dist
 | `instance_name` | `Guest` | `IoT` |
 | `discovery_prefix` | `homeassistant-guest` | `homeassistant-iot` |
 
-## Soft reset
+## Enable / disable toggle
+
+You can expose an `input_boolean` helper as a switch to control whether the addon is running. This is useful for temporarily disabling the downstream without going into the addon UI, or for building automations around it (e.g. disable at night, disable when guests leave).
+
+**1. Create the helper**
+
+Go to **Settings → Helpers → Add Helper → Toggle** and name it `mqtt_downstream_enabled`.
+
+**2. Add a `rest_command` to `configuration.yaml`**
+
+The Supervisor API is the correct way to set `boot` and `watchdog` on an addon — there is no native HA service for this:
+
+```yaml
+rest_command:
+  mqtt_downstream_enable:
+    url: "http://supervisor/addons/local_mqtt_downstream/options"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ states('sensor.supervisor_token') }}"
+      Content-Type: application/json
+    payload: '{"boot": "auto", "watchdog": true}'
+
+  mqtt_downstream_disable:
+    url: "http://supervisor/addons/local_mqtt_downstream/options"
+    method: POST
+    headers:
+      Authorization: "Bearer {{ states('sensor.supervisor_token') }}"
+      Content-Type: application/json
+    payload: '{"boot": "manual", "watchdog": false}'
+```
+
+> **Note:** Replace `local_mqtt_downstream` with your actual addon slug. The Supervisor token can be obtained from the `SUPERVISOR_TOKEN` environment variable — the easiest way is to expose it via a template sensor or use a hardcoded long-lived access token.
+
+**3. Create the automation**
+
+```yaml
+automation:
+  - alias: "MQTT Downstream — Enable / Disable"
+    trigger:
+      - platform: state
+        entity_id: input_boolean.mqtt_downstream_enabled
+    action:
+      - choose:
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.mqtt_downstream_enabled
+                state: "on"
+            sequence:
+              - service: rest_command.mqtt_downstream_enable
+              - service: hassio.addon_start
+                data:
+                  addon: mqtt_downstream
+          - conditions:
+              - condition: state
+                entity_id: input_boolean.mqtt_downstream_enabled
+                state: "off"
+            sequence:
+              - service: hassio.addon_stop
+                data:
+                  addon: mqtt_downstream
+              - service: rest_command.mqtt_downstream_disable
+```
+
+When turned **off**, the addon is stopped and `boot: manual` + `watchdog: false` are set via the Supervisor API — preventing HA from restarting it automatically. When turned **on**, the options are restored before the addon starts.
+
+> **Note:** If running multiple instances, use the full slug shown in the addon URL (e.g. `mqtt_downstream_2`) in the `addon` field.
+
+When the addon is stopped, the downstream HA will retain the last published states from the broker until they are overwritten or the broker is restarted — entities will not disappear, they will just stop updating.
 
 To re-run discovery without restarting the addon, trigger any of the following:
 
@@ -167,7 +214,9 @@ To re-run discovery without restarting the addon, trigger any of the following:
 - Glob patterns (e.g. `light.*`, `*.kitchen_*`) are supported in the entity list and exclude list
 - Area entities are resolved via the HA entity registry — area assignment changes are picked up on the next dropdown change or restart
 - The addon connects directly to the broker; it does not route through HA's MQTT integration
+- **Recommended:** use a broker that supports per-user topic ACLs rather than HA's built-in MQTT broker. HA's integration only supports per-user credentials with no topic-level restrictions — a standalone broker lets you lock Guest HA credentials down to command topics only, preventing it from publishing to state or discovery topics even if credentials are compromised. Good options are **Mosquitto** (ACLs via config file, lightweight) or **EMQX** (ACLs via web dashboard, easier to manage for multiple users). See `ARCHITECTURE.md` for an example ACL config
 - Retained state topics are read-only on the downstream side — restoring retained state updates the UI but does not trigger automations or services
+- When an entity is removed from the resolved list, its discovery topic is cleared (empty retained payload) causing the downstream HA to remove the entity. State and attribute sub-topics are **not** cleared from the broker — they remain with their last retained value until manually deleted or the broker is restarted
 
 ---
 
