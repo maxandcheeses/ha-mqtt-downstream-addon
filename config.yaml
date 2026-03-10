@@ -1,0 +1,55 @@
+name: MQTT Downstream
+description: >-
+  Syncs Home Assistant entities to a downstream MQTT broker.
+  Publishes discovery, state, and attributes. Routes inbound commands back to HA.
+  Entities are resolved additively from entity globs, areas, and domain includes,
+  with optional glob-based exclusions. Configurable via HA helper entities.
+version: "1.0.23"
+slug: mqtt_downstream
+init: false
+arch:
+  - aarch64
+  - amd64
+  - armhf
+  - armv7
+  - i386
+homeassistant_api: true
+mqtt: true
+services:
+  - mqtt:need
+url: "https://github.com/maxandcheeses/mqtt-downstream-addon"
+panel_icon: mdi:waves-arrow-right
+
+options:
+  mqtt_base: homeassistant-guest
+  discovery_prefix: homeassistant
+  entities_select: input_select.mqtt_downstream_entities
+  areas_select: input_select.mqtt_downstream_areas
+  domains_select: input_select.mqtt_downstream_domains
+  excludes_select: input_select.mqtt_downstream_excludes
+  broker_host: ""
+  broker_port: ""
+  broker_username: ""
+  broker_password: ""
+  discovery_on_startup: true
+  discovery_on_dropdown: true
+  discovery_on_birth: true
+  debug: false
+  retain: true
+
+schema:
+  mqtt_base: str
+  discovery_prefix: str
+  entities_select: str?
+  areas_select: str?
+  domains_select: str?
+  excludes_select: str?
+  broker_host: str
+  broker_port: int?
+  broker_username: str
+  broker_password: password
+  discovery_on_startup: bool
+  discovery_on_dropdown: bool
+  discovery_on_birth: bool
+  debug: bool
+  retain: bool
