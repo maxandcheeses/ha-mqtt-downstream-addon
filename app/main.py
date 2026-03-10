@@ -43,6 +43,7 @@ def _require_strict(name: str) -> str:
 
 MQTT_BASE           = _require_strict("MQTT_BASE")
 DISCOVERY_PREFIX        = _require("DISCOVERY_PREFIX", "homeassistant")
+INSTANCE_NAME           = _require("INSTANCE_NAME", "")
 DISCOVERY_ON_STARTUP    = os.environ.get("DISCOVERY_ON_STARTUP",  "true").lower() == "true"
 DISCOVERY_ON_DROPDOWN   = os.environ.get("DISCOVERY_ON_DROPDOWN", "true").lower() == "true"
 DISCOVERY_ON_BIRTH      = os.environ.get("DISCOVERY_ON_BIRTH",    "true").lower() == "true"
@@ -58,6 +59,12 @@ DEBUG            = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 RETAIN          = os.environ.get("RETAIN", "").lower() in ("1", "true", "yes")
 BIRTH_TOPIC      = f"{MQTT_BASE}/status"
 
+if INSTANCE_NAME:
+    for handler in logging.root.handlers:
+        handler.setFormatter(logging.Formatter(
+            f"%(asctime)s [{INSTANCE_NAME}] [%(levelname)s] %(message)s"
+        ))
+    log.info("Instance name: %s", INSTANCE_NAME)
 if DEBUG:
     logging.getLogger().setLevel(logging.DEBUG)
     log.debug("Debug logging enabled")
@@ -369,7 +376,7 @@ class MQTTDownstream:
     def _publish_discovery(self, entity_id: str, state_obj: dict):
         domain  = mqtt_domain(entity_id)
         slug    = entity_slug(entity_id)
-        payload = discovery_payload(entity_id, state_obj, MQTT_BASE, DISCOVERY_PREFIX)
+        payload = discovery_payload(entity_id, state_obj, MQTT_BASE, DISCOVERY_PREFIX, instance_name=INSTANCE_NAME)
         if payload is None:
             log.warning("No discovery payload for %s (domain=%s)", entity_id, domain)
             return

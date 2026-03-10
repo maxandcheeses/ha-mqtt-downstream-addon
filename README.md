@@ -10,6 +10,7 @@ A Home Assistant addon that syncs entities to a downstream MQTT broker. Useful f
 - Re-runs discovery automatically on startup, when any config dropdown changes, or when an MQTT birth message is received
 - When an entity is removed from the resolved list, its discovery payload is cleared from the broker
 - New entities added to HA after startup are detected automatically and re-evaluated against configured globs
+- Supports multiple instances — each instance operates independently with its own configuration
 
 ## Installation
 
@@ -46,8 +47,9 @@ All sources are additive — an entity only needs to appear in one source to be 
 
 | Option | Required | Default | Description |
 |---|---|---|---|
-| `mqtt_base` | ✅ | `homeassistant-guest` | Base topic for all state, attribute, and command messages |
+| `mqtt_base` | ✅ | `homeassistant-guest` | Base topic for all state, attribute, and command messages. Also used as the unique identifier for MQTT discovery — must be unique per instance |
 | `discovery_prefix` | ✅ | `homeassistant` | MQTT discovery topic prefix. Set to a custom value (e.g. `homeassistant-guest`) to prevent your main HA from picking up these entities — the downstream HA must set `discovery_prefix` to the same value in its `configuration.yaml` |
+| `instance_name` | ❌ | — | Optional display label appended to entity names in the downstream HA (e.g. `Guest` → `Kitchen Light (Guest)`) and shown in addon log lines. Does not affect MQTT topics |
 | `broker_host` | ✅ | — | MQTT broker hostname or IP |
 | `broker_username` | ✅ | — | MQTT broker username |
 | `broker_password` | ✅ | — | MQTT broker password (stored securely) |
@@ -56,6 +58,9 @@ All sources are additive — an entity only needs to appear in one source to be 
 | `domains_select` | ⚠️ | `input_select.mqtt_downstream_domains` | `input_select` entity ID for domains to include. Adds all entities of the listed domains |
 | `excludes_select` | ❌ | `input_select.mqtt_downstream_excludes` | `input_select` entity ID for glob exclusion patterns |
 | `broker_port` | ❌ | `1883` | MQTT broker port |
+| `discovery_on_startup` | ❌ | `true` | Run discovery when the addon starts |
+| `discovery_on_dropdown` | ❌ | `true` | Run discovery when any config dropdown changes |
+| `discovery_on_birth` | ❌ | `true` | Run discovery when an MQTT birth message is received |
 | `retain` | ❌ | `true` | Publish all messages with the MQTT retain flag. Recommended — ensures the downstream HA restores the last known state on restart without waiting for a new change |
 | `debug` | ❌ | `false` | Enable verbose logging including the full resolved entity list on startup and on any dropdown change |
 
@@ -69,11 +74,12 @@ All sources are additive — an entity only needs to appear in one source to be 
 {mqtt_base}/{domain}/{slug}/{attribute}     ← Attribute sub-topics
 {mqtt_base}/{domain}/{slug}/set             ← Inbound command topic
 {mqtt_base}/{domain}/{slug}/set_{attr}      ← Inbound attribute command topics
+{mqtt_base}/{domain}/{slug}/send_command    ← Vendor-specific commands (vacuum, remote)
 ```
 
 ## Supported domains
 
-`light`, `switch`, `lock`, `cover`, `climate`, `fan`, `media_player`, `number`, `select`, `text`, `button`, `scene`, `script`, `vacuum`, `humidifier`, `alarm_control_panel`, `valve`, `water_heater`, `siren`, `lawn_mower`, `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`, `input_button`
+`light`, `switch`, `lock`, `cover`, `climate`, `fan`, `media_player`, `number`, `select`, `text`, `button`, `scene`, `script`, `vacuum`, `humidifier`, `alarm_control_panel`, `valve`, `water_heater`, `siren`, `lawn_mower`, `remote`, `input_boolean`, `input_number`, `input_text`, `input_select`, `input_datetime`, `input_button`
 
 ## Domain mapping
 
@@ -99,12 +105,32 @@ HA helper domains are mapped to their MQTT equivalents:
 | `media_player` | `volume`, `muted`, `source`, `sound_mode`, `media_title`, `media_artist` |
 | `humidifier` | `target_humidity`, `current_humidity`, `mode` |
 | `water_heater` | `temperature`, `current_temperature`, `mode`, `away_mode` |
-| `vacuum` | `battery_level`, `status` |
+| `vacuum` | `battery_level`, `status`, `fan_speed` (if supported) |
 | `alarm_control_panel` | `code_format` |
 | `valve` | `position` |
 | `lawn_mower` | `battery_level` |
 
 All attribute sub-topics are only published when the value is actually present on the entity — no empty payloads.
+
+## Vacuum commands
+
+The vacuum domain supports the full HA action set via the `set` command topic, plus fan speed and vendor-specific commands:
+
+| Payload | HA action |
+|---|---|
+| `start` | `vacuum.start` |
+| `pause` | `vacuum.pause` |
+| `stop` | `vacuum.stop` |
+| `return_to_base` | `vacuum.return_to_base` |
+| `locate` | `vacuum.locate` |
+| `clean_spot` | `vacuum.clean_spot` |
+| `clean_area` | `vacuum.clean_area` |
+
+For vendor-specific commands (e.g. Roborock zone/room cleaning), publish to `{mqtt_base}/vacuum/{slug}/send_command` with either a plain string or a JSON payload:
+
+```json
+{"command": "app_segment_clean", "params": [16, 20]}
+```
 
 ## Downstream HA setup
 
@@ -114,6 +140,20 @@ To have a downstream HA instance auto-discover the entities, add this to its `co
 mqtt:
   discovery_prefix: homeassistant-guest
 ```
+
+## Multiple instances
+
+This addon supports multiple instances. Each instance must have a unique `mqtt_base` value — this is used as the MQTT topic namespace and as the entity unique ID prefix, so two instances with different `mqtt_base` values will produce completely separate, non-conflicting entities in the downstream HA.
+
+Set `instance_name` on each instance (e.g. `Guest`, `IoT`, `Automation`) to distinguish them in the addon log and in downstream entity names.
+
+**Example — two instances:**
+
+| | Instance 1 | Instance 2 |
+|---|---|---|
+| `mqtt_base` | `homeassistant-guest` | `homeassistant-iot` |
+| `instance_name` | `Guest` | `IoT` |
+| `discovery_prefix` | `homeassistant-guest` | `homeassistant-iot` |
 
 ## Soft reset
 

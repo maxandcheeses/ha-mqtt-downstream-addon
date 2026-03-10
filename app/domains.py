@@ -194,18 +194,19 @@ def get_attribute_payloads(domain: str, attrs: dict) -> dict[str, str]:
 
 # ── Discovery payloads ─────────────────────────────────────────────────────────
 
-def discovery_payload(entity_id: str, state_obj: dict, mqtt_base: str, discovery_prefix: str = "homeassistant") -> dict | None:
+def discovery_payload(entity_id: str, state_obj: dict, mqtt_base: str, discovery_prefix: str = "homeassistant", instance_name: str = "") -> dict | None:
     """Return the MQTT discovery config payload dict, or None if unsupported."""
     domain  = mqtt_domain(entity_id)
     slug    = entity_slug(entity_id)
     attrs   = state_obj.get("attributes", {})
-    name    = attrs.get("friendly_name") or slug
+    name         = attrs.get("friendly_name") or slug
+    display_name = f"{name} ({instance_name})" if instance_name else name
     base    = f"{mqtt_base}/{domain}/{slug}"
-    dev     = {"identifiers": [f"guest_{slug}"], "name": name}
+    dev     = {"identifiers": [f"{mqtt_base}_{slug}"], "name": display_name}
 
     common = {
-        "name":        name,
-        "unique_id":   f"guest_{slug}",
+        "name":        display_name,
+        "unique_id":   f"{mqtt_base}_{slug}",
         "state_topic": f"{base}/state",
         "device":      dev,
     }
