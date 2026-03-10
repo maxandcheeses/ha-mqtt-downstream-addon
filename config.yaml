@@ -4,7 +4,7 @@ description: >-
   Publishes discovery, state, and attributes. Routes inbound commands back to HA.
   Entities are resolved additively from entity globs, areas, and domain includes,
   with optional glob-based exclusions. Configurable via HA helper entities.
-version: "1.0.23"
+version: "1.0.27"
 slug: mqtt_downstream
 init: false
 arch:
@@ -34,8 +34,8 @@ options:
   discovery_on_startup: true
   discovery_on_dropdown: true
   discovery_on_birth: true
-  debug: false
   retain: true
+  debug: false
 
 schema:
   mqtt_base: str
@@ -51,5 +51,5 @@ schema:
   discovery_on_startup: bool
   discovery_on_dropdown: bool
   discovery_on_birth: bool
-  debug: bool
   retain: bool
+  debug: bool
