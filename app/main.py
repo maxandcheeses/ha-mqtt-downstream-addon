@@ -58,13 +58,20 @@ BROKER_USERNAME  = _require("BROKER_USERNAME")
 BROKER_PASSWORD  = _require("BROKER_PASSWORD")
 DEBUG            = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 RETAIN          = os.environ.get("RETAIN", "").lower() in ("1", "true", "yes")
-BIRTH_TOPIC      = f"{MQTT_BASE}/status"
+BIRTH_TOPIC        = f"{MQTT_BASE}/status"
+HEARTBEAT_TOPIC    = f"{MQTT_BASE}/status/heartbeat"
+HEARTBEAT_INTERVAL_SECONDS = max(0.0, float(_require("HEARTBEAT_INTERVAL_SECONDS", "60") or 0))  # seconds (supports floats e.g. 0.3), 0 = disabled
 
 if DEBUG:
     logging.getLogger().setLevel(logging.DEBUG)
     log.debug("Debug logging enabled")
-HA_TOKEN         = _require_strict("SUPERVISOR_TOKEN")
-HA_WS_URL        = "ws://supervisor/core/websocket"
+
+# Support both addon (SUPERVISOR_TOKEN) and standalone Docker (HA_TOKEN + HA_WS_URL)
+HA_TOKEN  = _require("HA_TOKEN") or _require("SUPERVISOR_TOKEN")
+if not HA_TOKEN:
+    log.error("No HA token found — set HA_TOKEN (standalone) or SUPERVISOR_TOKEN (addon)")
+    raise SystemExit(1)
+HA_WS_URL = _require("HA_WS_URL", "ws://supervisor/core/websocket")
 
 # Validate: if entities_select is empty, domains_select is required
 if not ENTITIES_SELECT and not AREAS_SELECT and not DOMAINS_SELECT:
@@ -87,7 +94,8 @@ class MQTTDownstream:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._resolved_entities: list[str] = []  # expanded at startup
         self._previous_entities: list[str] = []  # used to detect removals
-        self._area_entity_map: dict[str, list[str]] = {}  # area_id → [entity_ids]
+        self._area_entity_map: dict[str, list[str]] = {}  # area_name → [entity_ids]
+        self._area_id_map: dict[str, str] = {}            # area_id → area_name
 
     # ── Entity list ───────────────────────────────────────────────────────────
 
@@ -130,17 +138,33 @@ class MQTTDownstream:
 
         # ── Step 2: areas_select ──
         if areas:
-            known_areas = {name.lower() for name in self._area_entity_map}
+            # Normalise: if a requested value matches an area_id, resolve it to the area name
+            def _resolve_area(requested: str) -> str:
+                """Return the area name for a given input (accepts name or area_id, case-insensitive)."""
+                req_lower = requested.lower()
+                # Check by name first
+                for name in self._area_entity_map:
+                    if name.lower() == req_lower:
+                        return name
+                # Fall back: check area_id lookup
+                for area_id, name in self._area_id_map.items():
+                    if area_id.lower() == req_lower:
+                        return name
+                return ""
+
+            known_names = {name.lower() for name in self._area_entity_map}
+            known_ids   = {aid.lower() for aid in self._area_id_map}
             for requested in areas:
-                if requested not in known_areas:
-                    log.warning("Area %r not found in HA — no entities added", requested)
-            for area_name, entity_ids in self._area_entity_map.items():
-                if area_name.lower() in areas:
-                    for eid in entity_ids:
+                if requested.lower() not in known_names and requested.lower() not in known_ids:
+                    log.warning("Area %r not found in HA (tried as name and area_id) — no entities added", requested)
+            for requested in areas:
+                resolved_name = _resolve_area(requested)
+                if resolved_name and resolved_name in self._area_entity_map:
+                    for eid in self._area_entity_map[resolved_name]:
                         if eid not in seen:
                             resolved.append(eid)
                             seen.add(eid)
-                            log.debug("Area %r added entity %s", area_name, eid)
+                            log.debug("Area %r added entity %s", resolved_name, eid)
 
         # ── Step 3: domains_select — add all entities of listed domains ──
         domains = self.domain_include
@@ -326,6 +350,8 @@ class MQTTDownstream:
                 entity_map.setdefault(area_name, []).append(entry["entity_id"])
 
         self._area_entity_map = entity_map
+        # Build area_id → area_name lookup for matching by either id or name
+        self._area_id_map = {area_id: name for area_id, name in areas.items()}
         log.info("Area map built: %d areas (%d total areas in registry)", len(entity_map), len(areas))
         if DEBUG:
             for area, eids in sorted(entity_map.items()):
@@ -355,6 +381,8 @@ class MQTTDownstream:
                 log.error("MQTT connection failed (rc=%s)", reason_code)
                 return
             log.info("MQTT connected to %s:%s", BROKER_HOST, BROKER_PORT)
+            if HEARTBEAT_INTERVAL_SECONDS > 0:
+                client.publish(HEARTBEAT_TOPIC, payload="online", retain=True)
             client.subscribe(f"{MQTT_BASE}/+/+/set")
             client.subscribe(f"{MQTT_BASE}/+/+/#")
             client.subscribe(BIRTH_TOPIC)
@@ -372,10 +400,44 @@ class MQTTDownstream:
         self.mqttc.on_disconnect = on_disconnect
         self.mqttc.on_message    = on_message
         self.mqttc.reconnect_delay_set(min_delay=1, max_delay=30)
+        if HEARTBEAT_INTERVAL_SECONDS > 0:
+            self.mqttc.will_set(HEARTBEAT_TOPIC, payload="offline", retain=True)
         self.mqttc.connect(BROKER_HOST, BROKER_PORT, keepalive=60)
         self.mqttc.loop_start()
 
     # ── Publish ───────────────────────────────────────────────────────────────
+
+    def _publish_heartbeat_discovery(self):
+        """Publish MQTT discovery for the heartbeat binary sensor, then immediately publish state."""
+        payload = {
+            "name":             "MQTT Downstream",
+            "unique_id":        f"{MQTT_BASE}_heartbeat",
+            "state_topic":      HEARTBEAT_TOPIC,
+            "payload_on":       "online",
+            "payload_off":      "offline",
+            "device_class":     "connectivity",
+            "expire_after":     int(HEARTBEAT_INTERVAL_SECONDS * 3),
+            "device": {
+                "identifiers":  [f"{MQTT_BASE}_addon"],
+                "name":         f"MQTT Downstream ({MQTT_BASE})",
+                "manufacturer": "mqtt-downstream",
+            },
+        }
+        self.mqttc.publish(
+            f"{DISCOVERY_PREFIX}/binary_sensor/{MQTT_BASE}_heartbeat/config",
+            json.dumps(payload),
+            retain=True,
+        )
+        # Publish state immediately after discovery so HA receives it after subscribing
+        self.mqttc.publish(HEARTBEAT_TOPIC, payload="online", retain=True)
+        log.debug("Heartbeat discovery published")
+
+    async def _heartbeat_loop(self):
+        """Periodically publish online heartbeat. LWT handles offline on crash."""
+        while True:
+            await asyncio.sleep(HEARTBEAT_INTERVAL_SECONDS)
+            self.mqttc.publish(HEARTBEAT_TOPIC, payload="online", retain=True)
+            log.debug("Heartbeat published")
 
     def _publish_state(self, entity_id: str, state_obj: dict):
         state  = state_obj.get("state", "")
@@ -520,6 +582,9 @@ class MQTTDownstream:
             await self._fetch_all_states()
             await self._fetch_area_entity_map()
             await self._subscribe_events()
+            if HEARTBEAT_INTERVAL_SECONDS > 0:
+                self._publish_heartbeat_discovery()
+                asyncio.create_task(self._heartbeat_loop())
             self._schedule_discovery()
 
             # Wait for reader forever (exits only on disconnect)

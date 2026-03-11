@@ -4,7 +4,7 @@ description: >-
   Publishes discovery, state, and attributes. Routes inbound commands back to HA.
   Entities are resolved additively from entity globs, areas, and domain includes,
   with optional glob-based exclusions. Configurable via HA helper entities.
-version: "1.0.37"
+version: "1.0.47"
 slug: mqtt_downstream
 init: false
 multi_instance: true
@@ -18,7 +18,7 @@ homeassistant_api: true
 mqtt: true
 services:
   - mqtt:need
-url: "https://github.com/maxandcheeses/mqtt-downstream-addon"
+url: "https://github.com/maxandcheeses/ha-mqtt-downstream-addon"
 panel_icon: mdi:waves-arrow-right
 
 options:
@@ -37,6 +37,7 @@ options:
   discovery_on_dropdown_change: true
   discovery_on_birth: true
   unpublish_on_remove: true
+  heartbeat_interval_seconds: 60
   retain: true
   debug: false
 
@@ -56,5 +57,6 @@ schema:
   discovery_on_dropdown_change: bool
   discovery_on_birth: bool
   unpublish_on_remove: bool
+  heartbeat_interval_seconds: float
   retain: bool
   debug: bool

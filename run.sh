@@ -12,6 +12,8 @@ export RETAIN=$(bashio::config 'retain')
 export DISCOVERY_ON_STARTUP=$(bashio::config 'discovery_on_startup')
 export DISCOVERY_ON_DROPDOWN_CHANGE=$(bashio::config 'discovery_on_dropdown_change')
 export DISCOVERY_ON_BIRTH=$(bashio::config 'discovery_on_birth')
+export UNPUBLISH_ON_REMOVE=$(bashio::config 'unpublish_on_remove')
+export HEARTBEAT_INTERVAL_SECONDS=$(bashio::config 'heartbeat_interval_seconds')
 
 # Use provided broker config, or fall back to HA system MQTT service
 CUSTOM_HOST=$(bashio::config 'broker_host')

@@ -17,7 +17,7 @@ A Home Assistant addon that syncs entities to a downstream MQTT broker. Useful f
 ## Installation
 
 1. Go to **Settings → Apps → Install app → ⋮ → Repositories**
-2. Paste the repository URL: `https://github.com/maxandcheeses/mqtt-downstream-addon`
+2. Paste the repository URL: `https://github.com/maxandcheeses/ha-mqtt-downstream-addon`
 3. Install **MQTT Downstream** from the Apps store
 4. Create the required helpers, configure the options, and start the addon
 
@@ -63,6 +63,7 @@ All sources are additive — an entity only needs to appear in one source to be 
 | `discovery_on_dropdown_change` | ❌ | `true` | Run discovery when any config dropdown changes |
 | `discovery_on_birth` | ❌ | `true` | Run discovery when an MQTT birth message is received |
 | `unpublish_on_remove` | ❌ | `true` | When an entity is removed from the resolved list, clear its discovery topic from the broker — causing the downstream HA to remove the entity. Disable to retain the entity in the downstream HA even after removal |
+| `heartbeat_interval_seconds_ms` | ❌ | `60` | Heartbeat frequency in seconds. Publishes a `binary_sensor` connectivity entity and periodic `online` state. Uses MQTT LWT to publish `offline` automatically on crash. Set to `0` to disable |
 | `retain` | ❌ | `true` | Publish all messages with the MQTT retain flag. Recommended — ensures the downstream HA restores the last known state on restart without waiting for a new change |
 | `debug` | ❌ | `false` | Enable verbose logging including the full resolved entity list on startup and on any dropdown change |
 
