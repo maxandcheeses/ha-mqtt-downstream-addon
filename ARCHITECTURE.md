@@ -2,6 +2,14 @@
 
 > Isolate your main Home Assistant instance from external access by bridging entity state through a downstream MQTT broker and a hardened guest HA instance.
 
+There are two ways to deploy the MQTT broker depending on how much isolation you want, and access to Guest HA can be via Cloudflare Zero Trust or directly over the local network. All combinations are supported by the addon — the broker host is simply a config option.
+
+---
+
+## Option A — Shared internal broker
+
+The broker lives on your trusted network. Both Main HA and Guest HA connect to it. ACLs restrict what Guest HA can publish.
+
 ```mermaid
 %%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e3a5f', 'primaryBorderColor': '#3b82f6', 'lineColor': '#374151', 'secondaryColor': '#dcfce7', 'tertiaryColor': '#fef3c7', 'background': '#ffffff', 'mainBkg': '#ffffff', 'nodeBorder': '#6b7280', 'clusterBkg': '#f9fafb', 'titleColor': '#111827', 'edgeLabelBackground': '#f3f4f6'}}}%%
 flowchart TB
@@ -10,19 +18,19 @@ flowchart TB
     end
 
     subgraph EDGE["🔐 Edge — Cloudflare Zero Trust"]
-        CF["☁️ Cloudflare Tunnel + Access<br/>SSO · MFA · IP policy · DDoS protection<br/>Session duration: 24h · 1 week · 1 month<br/>Outbound-only — no open inbound ports"]
+        CF["☁️ Cloudflare Tunnel + Access<br/>SSO · MFA · IP policy · DDoS protection<br/>Outbound-only — no open inbound ports"]
     end
 
     subgraph TRUSTED["🔒 Trusted Network — Never Exposed"]
         direction LR
         MAIN["🏠 Main HA<br/>All integrations<br/>Full device access"]
         ADDON["🌊 MQTT Downstream<br/>HA Addon<br/>Discovery · State · Commands"]
-        BROKER["📡 MQTT Broker<br/>Mosquitto / EMQX<br/>homeassistant-guest/#"]
+        BROKER["📡 MQTT Broker<br/>EMQX<br/>homeassistant-guest/#"]
         GUEST["🏡 Guest HA<br/>Subset of entities only<br/>No main infra access"]
 
         MAIN -->|"WebSocket / state_changed events"| ADDON
         ADDON -->|"MQTT Publish / discovery · state · attrs"| BROKER
-        BROKER -->|"MQTT :1883/:8883 / subscribe"| GUEST
+        BROKER -->|"MQTT subscribe"| GUEST
         GUEST -.->|"MQTT commands"| BROKER
         BROKER -.->|"routed via WebSocket"| ADDON
     end
@@ -39,7 +47,113 @@ flowchart TB
     style GUEST  fill:#dcfce7,stroke:#16a34a,color:#14532d
 ```
 
-## Security boundaries
+**Security note:** Guest HA holds an active inbound connection to your trusted network. ACLs limit what it can do, but the connection itself exists.
+
+---
+
+## Option B — Guest-side broker
+
+The broker lives with Guest HA on its own isolated network. Main HA pushes outward to it — Guest HA never needs a connection into the trusted network.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e3a5f', 'primaryBorderColor': '#3b82f6', 'lineColor': '#374151', 'secondaryColor': '#dcfce7', 'tertiaryColor': '#fef3c7', 'background': '#ffffff', 'mainBkg': '#ffffff', 'nodeBorder': '#6b7280', 'clusterBkg': '#f9fafb', 'titleColor': '#111827', 'edgeLabelBackground': '#f3f4f6'}}}%%
+flowchart TB
+    subgraph INTERNET["🌍 Internet — Untrusted"]
+        USER["👤 External User<br/>Guest / family / remote access"]
+    end
+
+    subgraph EDGE["🔐 Edge — Cloudflare Zero Trust"]
+        CF["☁️ Cloudflare Tunnel + Access<br/>SSO · MFA · IP policy · DDoS protection<br/>Outbound-only — no open inbound ports"]
+    end
+
+    subgraph TRUSTED["🔒 Trusted Network — Never Exposed"]
+        MAIN["🏠 Main HA<br/>All integrations<br/>Full device access"]
+        ADDON["🌊 MQTT Downstream<br/>HA Addon<br/>Discovery · State · Commands"]
+
+        MAIN -->|"WebSocket / state_changed events"| ADDON
+    end
+
+    subgraph GUEST_NET["🏡 Guest Network — Isolated"]
+        BROKER["📡 MQTT Broker<br/>Guest-owned<br/>homeassistant-guest/#"]
+        GUEST["🏡 Guest HA<br/>Subset of entities only<br/>No route to trusted network"]
+
+        BROKER -->|"MQTT subscribe"| GUEST
+        GUEST -.->|"MQTT commands"| BROKER
+    end
+
+    ADDON -->|"MQTT Publish outbound<br/>discovery · state · attrs"| BROKER
+    BROKER -.->|"commands routed via WebSocket"| ADDON
+
+    USER -->|"HTTPS + Auth"| CF
+    CF -->|"Authenticated · re-auth at session expiry"| GUEST
+    GUEST -. "❌ No route to trusted network" .-> MAIN
+
+    style USER   fill:#fee2e2,stroke:#dc2626,color:#7f1d1d
+    style CF     fill:#ede9fe,stroke:#7c3aed,color:#3b0764
+    style MAIN   fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    style ADDON  fill:#cffafe,stroke:#0891b2,color:#164e63
+    style BROKER fill:#fef3c7,stroke:#d97706,color:#451a03
+    style GUEST  fill:#dcfce7,stroke:#16a34a,color:#14532d
+```
+
+**Tradeoff:** Main HA needs an outbound connection to the guest broker. Ensure the guest broker port is not exposed to the wider internet — only accessible to Main HA.
+
+---
+
+## Option C — Local network only (no Cloudflare)
+
+No external access at all — Guest HA is only accessible on the local network. Users connect directly via the Guest HA IP address or through a local reverse proxy (e.g. NGINX, Traefik, NPM). This works with either the shared broker (Option A) or guest-side broker (Option B) — shown here with the shared broker for clarity.
+
+```mermaid
+%%{init: {'theme': 'base', 'themeVariables': {'primaryColor': '#dbeafe', 'primaryTextColor': '#1e3a5f', 'primaryBorderColor': '#3b82f6', 'lineColor': '#374151', 'secondaryColor': '#dcfce7', 'tertiaryColor': '#fef3c7', 'background': '#ffffff', 'mainBkg': '#ffffff', 'nodeBorder': '#6b7280', 'clusterBkg': '#f9fafb', 'titleColor': '#111827', 'edgeLabelBackground': '#f3f4f6'}}}%%
+flowchart TB
+    subgraph LOCAL["🏠 Local Network Only"]
+        direction LR
+        MAIN["🏠 Main HA<br/>All integrations<br/>Full device access"]
+        ADDON["🌊 MQTT Downstream<br/>HA Addon<br/>Discovery · State · Commands"]
+        BROKER["📡 MQTT Broker<br/>Any broker · or Guest HA's own<br/>homeassistant-guest/#"]
+        GUEST["🏡 Guest HA<br/>Subset of entities only<br/>No main infra access"]
+        PROXY["🔀 Optional Reverse Proxy<br/>NGINX / Traefik / NPM<br/>Local HTTPS · custom domain"]
+        USER["👤 Local User<br/>On same network<br/>Direct IP or via proxy"]
+
+        MAIN -->|"WebSocket / state_changed events"| ADDON
+        ADDON -->|"MQTT Publish / discovery · state · attrs"| BROKER
+        BROKER -->|"MQTT subscribe"| GUEST
+        GUEST -.->|"MQTT commands"| BROKER
+        BROKER -.->|"routed via WebSocket"| ADDON
+        PROXY -->|"HTTP proxy"| GUEST
+        USER -->|"Direct IP :8123<br/>or via reverse proxy"| PROXY
+    end
+
+    style MAIN   fill:#dbeafe,stroke:#2563eb,color:#1e3a5f
+    style ADDON  fill:#cffafe,stroke:#0891b2,color:#164e63
+    style BROKER fill:#fef3c7,stroke:#d97706,color:#451a03
+    style GUEST  fill:#dcfce7,stroke:#16a34a,color:#14532d
+    style PROXY  fill:#f3e8ff,stroke:#9333ea,color:#3b0764
+    style USER   fill:#f0fdf4,stroke:#16a34a,color:#14532d
+```
+
+**Note:** Without Cloudflare, there is no SSO or MFA at the edge — access control relies entirely on HA's own login and optionally your reverse proxy. Guest HA is not reachable from the internet unless you explicitly open a port or set up your own external access.
+
+**Config tip:** If publishing to Guest HA's own internal broker, set `mqtt_base` to `homeassistant` so Guest HA picks up entities without any custom configuration. Keep `discovery_prefix` as `homeassistant-guest` and configure the same value in Guest HA's `configuration.yaml` to prevent any unintended discovery conflicts.
+
+---
+
+## Comparison
+
+| | Option A — Shared broker | Option B — Guest-side broker | Option C — Local only |
+|---|---|---|---|
+| Broker location | Trusted network | Guest network | Trusted network or guest HA's own |
+| Guest HA connects to trusted network | Yes — inbound MQTT connection | No | Yes — inbound MQTT connection |
+| Main HA connects outbound | No | Yes — to guest broker | No |
+| ACLs needed | Yes — to restrict Guest HA | Optional — broker is already isolated | Yes — to restrict Guest HA |
+| External access | Via Cloudflare Zero Trust | Via Cloudflare Zero Trust | No — local network only |
+| Edge authentication | Cloudflare SSO + MFA | Cloudflare SSO + MFA | HA login + optional reverse proxy |
+| Isolation | Good | Stronger | Good — not internet-facing |
+
+---
+
+## Security boundaries (Option A)
 
 | Zone | Components | Exposed |
 |---|---|---|
@@ -47,16 +161,29 @@ flowchart TB
 | 🔐 Edge | Cloudflare Tunnel + Access | Outbound tunnel only — zero inbound firewall rules |
 | 🌍 Internet | External users | See Guest HA UI only, behind Cloudflare auth |
 
+## Security boundaries (Option B)
+
+| Zone | Components | Exposed |
+|---|---|---|
+| 🔒 Trusted | Main HA, MQTT Downstream addon | Never — no inbound connections |
+| 🏡 Guest network | MQTT broker, Guest HA | Isolated — no route back to trusted network |
+| 🔐 Edge | Cloudflare Tunnel + Access | Outbound tunnel only — zero inbound firewall rules |
+| 🌍 Internet | External users | See Guest HA UI only, behind Cloudflare auth |
+
+---
+
 ## Data flow
 
 | Flow | Protocol | Notes |
 |---|---|---|
 | Main HA → Addon | WebSocket | Internal — `state_changed` event stream |
 | Addon → MQTT Broker | MQTT | Publishes discovery, state, and attribute sub-topics |
-| Guest HA → MQTT Broker | MQTT `:1883` / `:8883` | Direct internal connection — not through the tunnel |
+| Guest HA → MQTT Broker | MQTT `:1883` / `:8883` | Option A: inbound to trusted network. Option B: local to guest network |
 | Guest HA → Command | MQTT → Addon → WebSocket | Commands routed back to Main HA service calls |
 | External User → Guest HA UI | HTTPS via Cloudflare Tunnel | SSO + MFA enforced at edge |
 | External User → Main HA | ❌ Blocked | No route — not reachable from outside |
+
+---
 
 ## Cloudflare Zero Trust — session duration
 
@@ -71,38 +198,39 @@ Cloudflare Access allows you to configure how long an authenticated session last
 
 When a session expires, the user is redirected to your identity provider to re-authenticate before accessing Guest HA again. This ensures that revoked users (e.g. removed from your identity provider) lose access within the configured window.
 
+---
+
 ## MQTT topic-level ACLs
 
 Home Assistant's built-in MQTT integration only supports per-user credentials — it has no concept of per-topic access control. This means any user with valid credentials can subscribe to or publish on any topic, which is too broad for a guest/downstream setup.
 
-Mosquitto and EMQX both support **Access Control Lists (ACLs)** that restrict exactly which topics each user can read or write. This adds a meaningful security boundary even within the trusted network.
+EMQX supports **Access Control Lists (ACLs)** that restrict exactly which topics each user can read or write. This is especially important in Option A where Guest HA connects directly to the trusted broker.
 
-**Example Mosquitto ACL config:**
+**Example EMQX ACL rules:**
 
 ```
-# MQTT Downstream addon — can publish discovery and state, subscribe to commands
-user mqtt_downstream
-topic write homeassistant-guest/#
-topic read  homeassistant-guest/#
+# MQTT Downstream addon — full access to publish discovery and state
+mqtt_downstream  →  allow publish/subscribe  homeassistant-guest/#
 
-# Guest HA — can only subscribe to state/discovery, publish commands
-user guest_ha
-topic read  homeassistant-guest/#
-topic write homeassistant-guest/+/+/set
-topic write homeassistant-guest/+/+/set_#
-topic write homeassistant-guest/+/+/send_command
+# Guest HA — read-only on state/discovery, write only to command topics
+guest_ha  →  allow subscribe  homeassistant-guest/#
+guest_ha  →  allow publish    homeassistant-guest/+/+/set
+guest_ha  →  allow publish    homeassistant-guest/+/+/set_#
+guest_ha  →  allow publish    homeassistant-guest/+/+/send_command
 ```
 
-With this in place, Guest HA cannot publish arbitrary payloads to state or discovery topics — it can only send commands to the designated `set` and `send_command` topics. Even if Guest HA credentials were compromised, the attacker could not inject false states or overwrite discovery payloads.
+With this in place, Guest HA cannot publish arbitrary payloads to state or discovery topics — it can only send commands. Even if Guest HA credentials were compromised, an attacker could not inject false states or overwrite discovery payloads.
 
-HA's own MQTT integration does not expose this level of control, which is another reason to run a dedicated broker rather than relying solely on HA's internal one.
+In Option B the broker is already isolated to the guest network so ACLs are less critical — but still recommended as defence in depth.
+
+---
 
 ## Key security properties
 
 - **No inbound ports** on the trusted network — Cloudflare Tunnel is outbound-only
-- **Main HA is never exposed** — not reachable from the internet, even if Guest HA is compromised
-- **MQTT is internal only** — Guest HA connects to the broker over the local network, not through the tunnel
-- **MQTT ACLs enforced at broker level** — Guest HA credentials are restricted to command topics only; state and discovery topics are write-protected
+- **Main HA is never exposed** — not reachable from the internet under either option
+- **Option B eliminates inbound broker connections** — Guest HA never reaches into the trusted network
+- **MQTT ACLs enforced at broker level** — Guest HA credentials restricted to command topics only
 - **Scope-limited entities** — Guest HA only sees the entities you explicitly configure via MQTT Downstream
 - **Commands are mediated** — all commands from Guest HA pass through the addon before reaching Main HA
 - **Time-limited access** — Cloudflare Zero Trust enforces session expiry, ensuring revoked users lose access automatically

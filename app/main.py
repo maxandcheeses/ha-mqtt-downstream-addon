@@ -43,10 +43,11 @@ def _require_strict(name: str) -> str:
 
 MQTT_BASE           = _require_strict("MQTT_BASE")
 DISCOVERY_PREFIX        = _require("DISCOVERY_PREFIX", "homeassistant")
-INSTANCE_NAME           = _require("INSTANCE_NAME", "")
 DISCOVERY_ON_STARTUP    = os.environ.get("DISCOVERY_ON_STARTUP",  "true").lower() == "true"
-DISCOVERY_ON_DROPDOWN   = os.environ.get("DISCOVERY_ON_DROPDOWN", "true").lower() == "true"
+DISCOVERY_ON_DROPDOWN_CHANGE   = os.environ.get("DISCOVERY_ON_DROPDOWN_CHANGE", "true").lower() == "true"
 DISCOVERY_ON_BIRTH      = os.environ.get("DISCOVERY_ON_BIRTH",    "true").lower() == "true"
+UNPUBLISH_ON_REMOVE     = os.environ.get("UNPUBLISH_ON_REMOVE",   "true").lower() == "true"
+ENABLED_ENTITY   = _require("ENABLED_ENTITY")
 ENTITIES_SELECT  = _require("ENTITIES_SELECT")
 AREAS_SELECT     = _require("AREAS_SELECT")
 EXCLUDES_SELECT  = _require("EXCLUDES_SELECT")
@@ -59,12 +60,6 @@ DEBUG            = os.environ.get("DEBUG", "").lower() in ("1", "true", "yes")
 RETAIN          = os.environ.get("RETAIN", "").lower() in ("1", "true", "yes")
 BIRTH_TOPIC      = f"{MQTT_BASE}/status"
 
-if INSTANCE_NAME:
-    for handler in logging.root.handlers:
-        handler.setFormatter(logging.Formatter(
-            f"%(asctime)s [{INSTANCE_NAME}] [%(levelname)s] %(message)s"
-        ))
-    log.info("Instance name: %s", INSTANCE_NAME)
 if DEBUG:
     logging.getLogger().setLevel(logging.DEBUG)
     log.debug("Debug logging enabled")
@@ -200,8 +195,11 @@ class MQTTDownstream:
             log.info("─────────────────────────────────────────")
         if removed:
             log.info("Entities removed from list: %s", ", ".join(removed))
-            for entity_id in removed:
-                self._unpublish_discovery(entity_id)
+            if UNPUBLISH_ON_REMOVE:
+                for entity_id in removed:
+                    self._unpublish_discovery(entity_id)
+            else:
+                log.debug("unpublish_on_remove is disabled — discovery topics retained for: %s", ", ".join(removed))
 
     @property
     def entity_list(self) -> list[str]:
@@ -280,10 +278,14 @@ class MQTTDownstream:
         self.states = {s["entity_id"]: s for s in (result.get("result") or [])}
         log.info("Loaded %d states from HA", len(self.states))
         self._warn_missing_selects()
-        self._expand_entity_list()
+        if not self._is_enabled():
+            log.info("Enabled entity (%s) is OFF at startup — starting in disabled state", ENABLED_ENTITY)
+        else:
+            self._expand_entity_list()
 
     def _warn_missing_selects(self):
         for name, entity_id in [
+            ("enabled_entity",  ENABLED_ENTITY),
             ("entities_select", ENTITIES_SELECT),
             ("areas_select",    AREAS_SELECT),
             ("domains_select",  DOMAINS_SELECT),
@@ -296,22 +298,35 @@ class MQTTDownstream:
                 )
 
     async def _fetch_area_entity_map(self):
-        """Build a map of area_name -> [entity_ids] using the HA entity registry."""
+        """Build a map of area_name -> [entity_ids] using the HA entity and device registry.
+
+        Area assignment can live on the entity itself OR on its parent device.
+        The entity-level assignment takes precedence; if the entity has no area_id,
+        fall back to the device's area_id.
+        """
         # Fetch areas
         areas_result = await self._send({"type": "config/area_registry/list"})
         areas = {a["area_id"]: a["name"] for a in (areas_result.get("result") or [])}
+        log.debug("Area registry: %d areas", len(areas))
 
-        # Fetch entity registry
+        # Fetch device registry — build device_id → area_id map
+        devices_result = await self._send({"type": "config/device_registry/list"})
+        device_area: dict[str, str] = {}
+        for dev in (devices_result.get("result") or []):
+            if dev.get("area_id"):
+                device_area[dev["id"]] = dev["area_id"]
+
+        # Fetch entity registry — resolve area from entity first, then device
         entities_result = await self._send({"type": "config/entity_registry/list"})
         entity_map: dict[str, list[str]] = {}
         for entry in (entities_result.get("result") or []):
-            area_id = entry.get("area_id")
+            area_id = entry.get("area_id") or device_area.get(entry.get("device_id") or "")
             if area_id and area_id in areas:
                 area_name = areas[area_id]
                 entity_map.setdefault(area_name, []).append(entry["entity_id"])
 
         self._area_entity_map = entity_map
-        log.info("Area map built: %d areas", len(entity_map))
+        log.info("Area map built: %d areas (%d total areas in registry)", len(entity_map), len(areas))
         if DEBUG:
             for area, eids in sorted(entity_map.items()):
                 log.debug("  Area %r: %s", area, ", ".join(eids))
@@ -376,7 +391,7 @@ class MQTTDownstream:
     def _publish_discovery(self, entity_id: str, state_obj: dict):
         domain  = mqtt_domain(entity_id)
         slug    = entity_slug(entity_id)
-        payload = discovery_payload(entity_id, state_obj, MQTT_BASE, DISCOVERY_PREFIX, instance_name=INSTANCE_NAME)
+        payload = discovery_payload(entity_id, state_obj, MQTT_BASE, DISCOVERY_PREFIX)
         if payload is None:
             log.warning("No discovery payload for %s (domain=%s)", entity_id, domain)
             return
@@ -392,7 +407,7 @@ class MQTTDownstream:
         slug   = entity_slug(entity_id)
         topic  = f"{DISCOVERY_PREFIX}/{domain}/{slug}/config"
         self.mqttc.publish(topic, "", retain=RETAIN)
-        log.info("Cleared discovery for %s", entity_id)
+        log.debug("Cleared discovery for %s", entity_id)
 
     # ── Discovery ─────────────────────────────────────────────────────────────
 
@@ -415,6 +430,13 @@ class MQTTDownstream:
 
     # ── Event handlers ────────────────────────────────────────────────────────
 
+    def _is_enabled(self) -> bool:
+        """Return False if enabled_entity is configured and in a falsy state."""
+        if not ENABLED_ENTITY:
+            return True
+        state = self.states.get(ENABLED_ENTITY, {}).get("state", "on")
+        return state.lower() not in ("off", "false", "0", "unavailable", "unknown", "none", "")
+
     async def _handle_state_changed(self, data: dict):
         entity_id = data.get("entity_id", "")
         new_state = data.get("new_state")
@@ -425,11 +447,29 @@ class MQTTDownstream:
         is_new = entity_id not in self.states
         self.states[entity_id] = new_state
 
+        # Enabled entity toggled — start or stop publishing
+        if ENABLED_ENTITY and entity_id == ENABLED_ENTITY:
+            if self._is_enabled():
+                log.info("Enabled entity turned ON (%s) — resuming", ENABLED_ENTITY)
+                self._expand_entity_list()
+                self._schedule_discovery()
+            else:
+                log.info("Enabled entity turned OFF (%s) — unpublishing discovery", ENABLED_ENTITY)
+                for eid in list(self._resolved_entities):
+                    self._unpublish_discovery(eid)
+                self._resolved_entities = []
+                self._previous_entities = []
+            return
+
+        # Skip all publishing if disabled
+        if not self._is_enabled():
+            return
+
         # Config dropdowns changed — re-expand entity list and re-run discovery
         if entity_id in (ENTITIES_SELECT, DOMAINS_SELECT, AREAS_SELECT, EXCLUDES_SELECT):
-            log.info("Config dropdown changed (%s) — re-expanding entity list", entity_id)
+            log.debug("Config dropdown changed (%s) — re-expanding entity list", entity_id)
             self._expand_entity_list()
-            if DISCOVERY_ON_DROPDOWN:
+            if DISCOVERY_ON_DROPDOWN_CHANGE:
                 self._schedule_discovery()
             return
 
@@ -446,9 +486,9 @@ class MQTTDownstream:
     async def _handle_mqtt_message(self, topic: str, payload: str):
         # Birth message → re-run discovery
         if topic == BIRTH_TOPIC and payload.strip().lower() == "online":
-            log.info("MQTT birth message received")
+            log.debug("MQTT birth message received")
             if DISCOVERY_ON_BIRTH:
-                log.info("Re-running discovery on birth message")
+                log.debug("Re-running discovery on birth message")
                 self._schedule_discovery()
             return
 
@@ -460,7 +500,7 @@ class MQTTDownstream:
             log.warning("Command for unknown entity %s — ignored", cmd["entity_id"])
             return
 
-        log.info("Command: %s.%s(%s) %s", cmd["domain"], cmd["service"], cmd["entity_id"], cmd["data"])
+        log.debug("Command: %s.%s(%s) %s", cmd["domain"], cmd["service"], cmd["entity_id"], cmd["data"])
         await self._call_service(cmd["domain"], cmd["service"], cmd["entity_id"], cmd["data"])
 
     # ── Main ─────────────────────────────────────────────────────────────────

@@ -1,5 +1,7 @@
 # MQTT Downstream
 
+![MQTT Downstream](logo.png)
+
 A Home Assistant addon that syncs entities to a downstream MQTT broker. Useful for exposing a subset of your HA entities to external systems, guest networks, or other HA instances via MQTT discovery.
 
 ## How it works
@@ -14,21 +16,21 @@ A Home Assistant addon that syncs entities to a downstream MQTT broker. Useful f
 
 ## Installation
 
-1. Copy the `mqtt_downstream` folder to `/addons/` on your HA host
-2. Go to **Settings → Add-ons → Add-on Store → ⋮ → Check for updates**
-3. Install **MQTT Downstream** from the Local Add-ons section
+1. Go to **Settings → Apps → Install app → ⋮ → Repositories**
+2. Paste the repository URL: `https://github.com/maxandcheeses/mqtt-downstream-addon`
+3. Install **MQTT Downstream** from the Apps store
 4. Create the required helpers, configure the options, and start the addon
 
 ## Prerequisites
 
 Create the following helpers in HA (**Settings → Helpers → Add Helper → Dropdown**) as needed:
 
-| Helper | Purpose |
-|---|---|
-| Entity list | Entity IDs or glob patterns to include (e.g. `light.kitchen`, `cover.*`) |
-| Area list | Area names whose entities should be included (e.g. `Living Room`) |
-| Domain list | Domain names to include all entities of (e.g. `light`, `cover`, `climate`) |
-| Exclude list | Glob patterns to exclude after all other resolution (e.g. `light.debug_*`) |
+| Helper | Purpose | Default entity ID |
+|---|---|---|
+| Entity list | Entity IDs or glob patterns to include (e.g. `light.kitchen`, `cover.*`) | `input_select.mqtt_downstream_entities` |
+| Area list | Area names whose entities should be included (e.g. `Living Room`) | `input_select.mqtt_downstream_areas` |
+| Domain list | Domain names to include all entities of (e.g. `light`, `cover`, `climate`) | `input_select.mqtt_downstream_domains` |
+| Exclude list | Glob patterns to exclude after all other resolution (e.g. `light.debug_*`) | `input_select.mqtt_downstream_excludes` |
 
 At least one of **entity list**, **area list**, or **domain list** must be configured.
 
@@ -47,9 +49,8 @@ All sources are additive — an entity only needs to appear in one source to be 
 
 | Option | Required | Default | Description |
 |---|---|---|---|
-| `mqtt_base` | ✅ | `homeassistant-guest` | Base topic for all state, attribute, and command messages. Also used as the unique identifier for MQTT discovery — must be unique per instance |
-| `discovery_prefix` | ✅ | `homeassistant` | MQTT discovery topic prefix. Set to a custom value (e.g. `homeassistant-guest`) to prevent your main HA from picking up these entities — the downstream HA must set `discovery_prefix` to the same value in its `configuration.yaml` |
-| `instance_name` | ❌ | — | Optional display label appended to entity names in the downstream HA (e.g. `Guest` → `Kitchen Light (Guest)`) and shown in addon log lines. Does not affect MQTT topics |
+| `mqtt_base` | ✅ | `homeassistant-guest` | Base topic for all state, attribute, and command messages. Also used as the unique identifier for MQTT discovery — must be unique per instance. If publishing directly to Guest HA's own broker, set this to `homeassistant` so Guest HA picks up entities without any custom configuration |
+| `discovery_prefix` | ✅ | `homeassistant-guest` | MQTT discovery topic prefix. Set to a custom value (e.g. `homeassistant-guest`) to prevent your main HA from picking up these entities — the downstream HA must set `discovery_prefix` to the same value in its `configuration.yaml` |
 | `broker_host` | ✅ | — | MQTT broker hostname or IP |
 | `broker_username` | ✅ | — | MQTT broker username |
 | `broker_password` | ✅ | — | MQTT broker password (stored securely) |
@@ -59,8 +60,9 @@ All sources are additive — an entity only needs to appear in one source to be 
 | `excludes_select` | ❌ | `input_select.mqtt_downstream_excludes` | `input_select` entity ID for glob exclusion patterns |
 | `broker_port` | ❌ | `1883` | MQTT broker port |
 | `discovery_on_startup` | ❌ | `true` | Run discovery when the addon starts |
-| `discovery_on_dropdown` | ❌ | `true` | Run discovery when any config dropdown changes |
+| `discovery_on_dropdown_change` | ❌ | `true` | Run discovery when any config dropdown changes |
 | `discovery_on_birth` | ❌ | `true` | Run discovery when an MQTT birth message is received |
+| `unpublish_on_remove` | ❌ | `true` | When an entity is removed from the resolved list, clear its discovery topic from the broker — causing the downstream HA to remove the entity. Disable to retain the entity in the downstream HA even after removal |
 | `retain` | ❌ | `true` | Publish all messages with the MQTT retain flag. Recommended — ensures the downstream HA restores the last known state on restart without waiting for a new change |
 | `debug` | ❌ | `false` | Enable verbose logging including the full resolved entity list on startup and on any dropdown change |
 
@@ -125,82 +127,34 @@ mqtt:
 
 This addon supports multiple instances. Each instance must have a unique `mqtt_base` value — this is used as the MQTT topic namespace and as the entity unique ID prefix, so two instances with different `mqtt_base` values will produce completely separate, non-conflicting entities in the downstream HA.
 
-Set `instance_name` on each instance (e.g. `Guest`, `IoT`, `Automation`) to distinguish them in the addon log and in downstream entity names.
-
 **Example — two instances:**
 
 | | Instance 1 | Instance 2 |
 |---|---|---|
 | `mqtt_base` | `homeassistant-guest` | `homeassistant-iot` |
-| `instance_name` | `Guest` | `IoT` |
 | `discovery_prefix` | `homeassistant-guest` | `homeassistant-iot` |
 
 ## Enable / disable toggle
 
-You can expose an `input_boolean` helper as a switch to control whether the addon is running. This is useful for temporarily disabling the downstream without going into the addon UI, or for building automations around it (e.g. disable at night, disable when guests leave).
+You can point the addon at any binary HA entity — a `switch`, `input_boolean`, or any other entity whose state is `on`/`off` — to control whether the addon is actively publishing. When the entity turns off, the addon unpublishes all discovery payloads from the broker and stops publishing state. When it turns back on, it re-expands the entity list and re-runs discovery automatically.
 
-**1. Create the helper**
+Set the `enabled_entity` config option to the entity ID of your toggle:
 
-Go to **Settings → Helpers → Add Helper → Toggle** and name it `mqtt_downstream_enabled`.
-
-**2. Add a `rest_command` to `configuration.yaml`**
-
-The Supervisor API is the correct way to set `boot` and `watchdog` on an addon — there is no native HA service for this:
-
-```yaml
-rest_command:
-  mqtt_downstream_enable:
-    url: "http://supervisor/addons/local_mqtt_downstream/options"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ states('sensor.supervisor_token') }}"
-      Content-Type: application/json
-    payload: '{"boot": "auto", "watchdog": true}'
-
-  mqtt_downstream_disable:
-    url: "http://supervisor/addons/local_mqtt_downstream/options"
-    method: POST
-    headers:
-      Authorization: "Bearer {{ states('sensor.supervisor_token') }}"
-      Content-Type: application/json
-    payload: '{"boot": "manual", "watchdog": false}'
+```
+enabled_entity: input_boolean.mqtt_downstream_enabled
 ```
 
-> **Note:** Replace `local_mqtt_downstream` with your actual addon slug. The Supervisor token can be obtained from the `SUPERVISOR_TOKEN` environment variable — the easiest way is to expose it via a template sensor or use a hardcoded long-lived access token.
+Any entity with a binary-style state works — the addon treats `off`, `false`, `0`, `unavailable`, and `unknown` as disabled, and anything else as enabled.
 
-**3. Create the automation**
+**Behaviour:**
 
-```yaml
-automation:
-  - alias: "MQTT Downstream — Enable / Disable"
-    trigger:
-      - platform: state
-        entity_id: input_boolean.mqtt_downstream_enabled
-    action:
-      - choose:
-          - conditions:
-              - condition: state
-                entity_id: input_boolean.mqtt_downstream_enabled
-                state: "on"
-            sequence:
-              - service: rest_command.mqtt_downstream_enable
-              - service: hassio.addon_start
-                data:
-                  addon: mqtt_downstream
-          - conditions:
-              - condition: state
-                entity_id: input_boolean.mqtt_downstream_enabled
-                state: "off"
-            sequence:
-              - service: hassio.addon_stop
-                data:
-                  addon: mqtt_downstream
-              - service: rest_command.mqtt_downstream_disable
-```
+| State | What happens |
+|---|---|
+| Turns **off** | Discovery payloads are unpublished (entities removed from downstream HA), state publishing stops. Any state changes that arrive while disabled are silently dropped |
+| Turns **on** | Entity list is re-expanded, discovery re-runs, state publishing resumes |
+| **Off at startup** | Addon starts in disabled state — no discovery, no publishing, until toggled on |
 
-When turned **off**, the addon is stopped and `boot: manual` + `watchdog: false` are set via the Supervisor API — preventing HA from restarting it automatically. When turned **on**, the options are restored before the addon starts.
-
-> **Note:** If running multiple instances, use the full slug shown in the addon URL (e.g. `mqtt_downstream_2`) in the `addon` field.
+This is entirely internal to the addon — no automations or `rest_command` needed.
 
 When the addon is stopped, the downstream HA will retain the last published states from the broker until they are overwritten or the broker is restarted — entities will not disappear, they will just stop updating.
 
@@ -214,7 +168,8 @@ To re-run discovery without restarting the addon, trigger any of the following:
 - Glob patterns (e.g. `light.*`, `*.kitchen_*`) are supported in the entity list and exclude list
 - Area entities are resolved via the HA entity registry — area assignment changes are picked up on the next dropdown change or restart
 - The addon connects directly to the broker; it does not route through HA's MQTT integration
-- **Recommended:** use a broker that supports per-user topic ACLs rather than HA's built-in MQTT broker. HA's integration only supports per-user credentials with no topic-level restrictions — a standalone broker lets you lock Guest HA credentials down to command topics only, preventing it from publishing to state or discovery topics even if credentials are compromised. Good options are **Mosquitto** (ACLs via config file, lightweight) or **EMQX** (ACLs via web dashboard, easier to manage for multiple users). See `ARCHITECTURE.md` for an example ACL config
+- **Broker deployment options:** the addon supports two architectures — a shared internal broker or a broker running on the guest network. With a guest-side broker, Main HA pushes outward and Guest HA never needs a connection back into your trusted network. The broker host is just a config option. See `ARCHITECTURE.md` for diagrams and a security comparison of both options
+- **Recommended:** use a broker that supports per-user topic ACLs rather than HA's built-in MQTT broker. HA's integration only supports per-user credentials with no topic-level restrictions. **EMQX** is a good choice — ACLs are manageable via its web dashboard without editing config files. ACLs are especially important in the shared broker model; with a guest-side broker they are less critical but still recommended as defence in depth. See `ARCHITECTURE.md` for an example ACL config
 - Retained state topics are read-only on the downstream side — restoring retained state updates the UI but does not trigger automations or services
 - When an entity is removed from the resolved list, its discovery topic is cleared (empty retained payload) causing the downstream HA to remove the entity. State and attribute sub-topics are **not** cleared from the broker — they remain with their last retained value until manually deleted or the broker is restarted
 
@@ -222,6 +177,6 @@ To re-run discovery without restarting the addon, trigger any of the following:
 
 ## Support
 
-If this addon saves you some time or adds value to your setup, consider buying me a home automation toy ☕
+If this addon saves you some time or adds value to your setup, consider buying me a home automation toy 🤖
 
 [![Buy Me A Home Automation Toy](https://cdn.buymeacoffee.com/buttons/v2/default-yellow.png)](https://www.buymeacoffee.com/maxwellluong)

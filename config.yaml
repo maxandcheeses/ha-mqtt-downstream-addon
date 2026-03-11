@@ -4,7 +4,7 @@ description: >-
   Publishes discovery, state, and attributes. Routes inbound commands back to HA.
   Entities are resolved additively from entity globs, areas, and domain includes,
   with optional glob-based exclusions. Configurable via HA helper entities.
-version: "1.0.29"
+version: "1.0.37"
 slug: mqtt_downstream
 init: false
 multi_instance: true
@@ -23,8 +23,8 @@ panel_icon: mdi:waves-arrow-right
 
 options:
   mqtt_base: homeassistant-guest
-  discovery_prefix: homeassistant
-  instance_name: ""
+  discovery_prefix: homeassistant-guest
+  enabled_entity: ""
   entities_select: input_select.mqtt_downstream_entities
   areas_select: input_select.mqtt_downstream_areas
   domains_select: input_select.mqtt_downstream_domains
@@ -34,15 +34,16 @@ options:
   broker_username: ""
   broker_password: ""
   discovery_on_startup: true
-  discovery_on_dropdown: true
+  discovery_on_dropdown_change: true
   discovery_on_birth: true
+  unpublish_on_remove: true
   retain: true
   debug: false
 
 schema:
   mqtt_base: str
   discovery_prefix: str
-  instance_name: str?
+  enabled_entity: str?
   entities_select: str?
   areas_select: str?
   domains_select: str?
@@ -52,7 +53,8 @@ schema:
   broker_username: str
   broker_password: password
   discovery_on_startup: bool
-  discovery_on_dropdown: bool
+  discovery_on_dropdown_change: bool
   discovery_on_birth: bool
+  unpublish_on_remove: bool
   retain: bool
   debug: bool
