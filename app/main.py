@@ -571,24 +571,40 @@ class MQTTDownstream:
         self._loop = asyncio.get_event_loop()
         self._setup_mqtt()
 
-        async with websockets.connect(HA_WS_URL, max_size=10 * 1024 * 1024) as ws:  # 10MB limit
-            self.ws = ws
-            await self._authenticate()
+        # Backoff schedule: 2s, 4s, 8s, 16s, 30s, 30s, ... (capped at 30s after 10 retries)
+        _BACKOFF = [2, 4, 8, 16, 30]
+        attempt = 0
 
-            # Start reader as background task so _send() futures can be resolved
-            reader_task = asyncio.create_task(self._ws_reader())
-            await asyncio.sleep(0)  # yield to event loop so reader_task starts
+        while True:
+            try:
+                async with websockets.connect(HA_WS_URL, max_size=10 * 1024 * 1024) as ws:
+                    self.ws = ws
+                    attempt = 0  # reset on successful connection
+                    await self._authenticate()
 
-            await self._fetch_all_states()
-            await self._fetch_area_entity_map()
-            await self._subscribe_events()
-            if HEARTBEAT_INTERVAL_SECONDS > 0:
-                self._publish_heartbeat_discovery()
-                asyncio.create_task(self._heartbeat_loop())
-            self._schedule_discovery()
+                    # Start reader as background task so _send() futures can be resolved
+                    reader_task = asyncio.create_task(self._ws_reader())
+                    await asyncio.sleep(0)  # yield to event loop so reader_task starts
 
-            # Wait for reader forever (exits only on disconnect)
-            await reader_task
+                    await self._fetch_all_states()
+                    await self._fetch_area_entity_map()
+                    await self._subscribe_events()
+                    if HEARTBEAT_INTERVAL_SECONDS > 0:
+                        self._publish_heartbeat_discovery()
+                        asyncio.create_task(self._heartbeat_loop())
+                    self._schedule_discovery()
+
+                    # Wait for reader forever (exits only on disconnect)
+                    await reader_task
+
+            except Exception as exc:
+                attempt += 1
+                delay = _BACKOFF[min(attempt - 1, len(_BACKOFF) - 1)]
+                log.warning(
+                    "HA WebSocket disconnected (attempt %d): %s — retrying in %ds",
+                    attempt, exc, delay,
+                )
+                await asyncio.sleep(delay)
 
 
 if __name__ == "__main__":
