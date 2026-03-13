@@ -4,7 +4,7 @@ description: >-
   Publishes discovery, state, and attributes. Routes inbound commands back to HA.
   Entities are resolved additively from entity globs, areas, and domain includes,
   with optional glob-based exclusions. Configurable via HA helper entities.
-version: "1.0.50"
+version: "1.0.51"
 slug: mqtt_downstream
 init: false
 multi_instance: true
@@ -33,6 +33,9 @@ options:
   broker_port: ""
   broker_username: ""
   broker_password: ""
+  broker_tls_ca: ""
+  broker_tls_cert: ""
+  broker_tls_key: ""
   discovery_on_startup: true
   discovery_on_dropdown_change: true
   discovery_on_birth: true
@@ -53,6 +56,9 @@ schema:
   broker_port: int?
   broker_username: str
   broker_password: password
+  broker_tls_ca: str?
+  broker_tls_cert: str?
+  broker_tls_key: str?
   discovery_on_startup: bool
   discovery_on_dropdown_change: bool
   discovery_on_birth: bool

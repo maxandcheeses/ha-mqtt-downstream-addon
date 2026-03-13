@@ -23,6 +23,9 @@ if bashio::var.has_value "${CUSTOM_HOST}"; then
     export BROKER_PORT=$(bashio::config 'broker_port')
     export BROKER_USERNAME=$(bashio::config 'broker_username')
     export BROKER_PASSWORD=$(bashio::config 'broker_password')
+    export BROKER_TLS_CA=$(bashio::config 'broker_tls_ca')
+    export BROKER_TLS_CERT=$(bashio::config 'broker_tls_cert')
+    export BROKER_TLS_KEY=$(bashio::config 'broker_tls_key')
 else
     bashio::log.info "Using HA system MQTT service"
     export BROKER_HOST=$(bashio::services mqtt "host" 2>/dev/null || echo "core-mosquitto")

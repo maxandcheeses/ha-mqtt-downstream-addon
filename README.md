@@ -54,6 +54,9 @@ All sources are additive — an entity only needs to appear in one source to be 
 | `broker_host` | ✅ | — | MQTT broker hostname or IP |
 | `broker_username` | ✅ | — | MQTT broker username |
 | `broker_password` | ✅ | — | MQTT broker password (stored securely) |
+| `broker_tls_ca` | ❌ | — | Base64-encoded CA certificate (PEM). Required to enable TLS. See [docs/mqtt-tls.md](docs/mqtt-tls.md) |
+| `broker_tls_cert` | ❌ | — | Base64-encoded client certificate (PEM). Only required if your broker uses mutual TLS |
+| `broker_tls_key` | ❌ | — | Base64-encoded client private key (PEM). Only required if your broker uses mutual TLS |
 | `entities_select` | ⚠️ | `input_select.mqtt_downstream_entities` | `input_select` entity ID for the entity watch list. Supports glob patterns |
 | `areas_select` | ⚠️ | `input_select.mqtt_downstream_areas` | `input_select` entity ID for area names to include |
 | `domains_select` | ⚠️ | `input_select.mqtt_downstream_domains` | `input_select` entity ID for domains to include. Adds all entities of the listed domains |
@@ -63,7 +66,7 @@ All sources are additive — an entity only needs to appear in one source to be 
 | `discovery_on_dropdown_change` | ❌ | `true` | Run discovery when any config dropdown changes |
 | `discovery_on_birth` | ❌ | `true` | Run discovery when an MQTT birth message is received |
 | `unpublish_on_remove` | ❌ | `true` | When an entity is removed from the resolved list, clear its discovery topic from the broker — causing the downstream HA to remove the entity. Disable to retain the entity in the downstream HA even after removal |
-| `heartbeat_interval_seconds_ms` | ❌ | `60` | Heartbeat frequency in seconds. Publishes a `binary_sensor` connectivity entity and periodic `online` state. Uses MQTT LWT to publish `offline` automatically on crash. Set to `0` to disable |
+| `heartbeat_interval_seconds` | ❌ | `60` | Heartbeat frequency in seconds. Publishes a `binary_sensor` connectivity entity and periodic `online` state. Uses MQTT LWT to publish `offline` automatically on crash. Set to `0` to disable |
 | `retain` | ❌ | `true` | Publish all messages with the MQTT retain flag. Recommended — ensures the downstream HA restores the last known state on restart without waiting for a new change |
 | `debug` | ❌ | `false` | Enable verbose logging including the full resolved entity list on startup and on any dropdown change |
 
@@ -164,8 +167,36 @@ To re-run discovery without restarting the addon, trigger any of the following:
 - Edit any option in a configured dropdown helper — the state change triggers re-expansion and re-discovery automatically
 - Publish `online` to `{mqtt_base}/status` via any MQTT client
 
+
+## TLS / Encrypted MQTT
+
+Encrypting MQTT traffic is recommended whenever your broker is reachable across network boundaries. See [docs/mqtt-tls.md](docs/mqtt-tls.md) for the full explanation and cert generation guide.
+
+### Converting cert files to base64
+
+The addon accepts certs as base64 strings so they can be stored in the config UI without file mounts.
+
+**Linux:**
+```bash
+cat ca.crt     | base64 -w 0   # → broker_tls_ca
+cat client.crt | base64 -w 0   # → broker_tls_cert
+cat client.key | base64 -w 0   # → broker_tls_key
+```
+
+**macOS:**
+```bash
+cat ca.crt     | base64        # → broker_tls_ca
+cat client.crt | base64        # → broker_tls_cert
+cat client.key | base64        # → broker_tls_key
+```
+
+Paste the output (a single long string) directly into the config field. Leave `broker_tls_cert` and `broker_tls_key` blank if your broker does not require mutual TLS — only `broker_tls_ca` is needed for standard one-way TLS.
+
+If no CA cert is provided, the addon will connect on plain TCP and log a warning at startup.
+
 ## Notes
 
+- **TLS encryption:** MQTT traffic is unencrypted by default. If your broker crosses network boundaries (VLANs, tunnels, guest networks), configure TLS using the `broker_tls_ca` option. See [docs/mqtt-tls.md](docs/mqtt-tls.md) for cert generation instructions and why this matters
 - Glob patterns (e.g. `light.*`, `*.kitchen_*`) are supported in the entity list and exclude list
 - Area entities are resolved via the HA entity registry — area assignment changes are picked up on the next dropdown change or restart
 - The addon connects directly to the broker; it does not route through HA's MQTT integration
