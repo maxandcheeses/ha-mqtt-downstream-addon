@@ -4,7 +4,7 @@ description: >-
   Publishes discovery, state, and attributes. Routes inbound commands back to HA.
   Entities are resolved additively from entity globs, areas, and domain includes,
   with optional glob-based exclusions. Configurable via HA helper entities.
-version: "1.0.55"
+version: "1.0.56"
 slug: mqtt_downstream
 init: false
 multi_instance: true
